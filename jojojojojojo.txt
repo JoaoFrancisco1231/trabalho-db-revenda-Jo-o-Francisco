@@ -1,0 +1,126 @@
+1) Contexto e objetivo
+
+Foi criado um banco para uma revenda de livros e papelaria, com tabelas de clientes, produtos, fornecedores, pedidos, pagamentos e itens do pedido. O objetivo desta atividade é documentar testes de consulta com filtro de texto, análise de plano de execução, criação de índice, alterações de tipos de dados, gerenciamento de permissões de usuários e comparação de resultados de consultas com diferentes tipos de JOIN, inclusive após atualizações que introduzem valores nulos em algumas colunas.
+
+2) Consulta filtrando texto com LIKE
+
+• A consulta foi planejada para retornar clientes cujo nome atende a um padrão textual (ex.: nomes iniciando com uma letra específica).
+• Campo utilizado no filtro: coluna “nome” da tabela “cliente”.
+• Critério de exemplo: nomes iniciados por “C”.
+• Resultado esperado com os dados cadastrados: retorno de registros como “Carlos Mendes” e “Camila Duarte”.
+• Observação: o curinga “%” representa “qualquer sequência de caracteres”; portanto, “C%” significa “começando por C”.
+
+3) Plano de execução (EXPLAIN) antes de criar índice
+
+• Foi executada a análise do plano de execução da consulta de filtro por nome.
+• Comportamento esperado antes de haver índice: o otimizador tende a optar por “varredura sequencial” na tabela de clientes (normalmente descrita como “Seq Scan”).
+• Interpretação: o banco lê a tabela inteira e aplica o filtro linha a linha, o que é adequado para conjuntos pequenos, mas não escala bem com tabelas grandes.
+• Evidências a capturar no ambiente: print mostrando o tipo de varredura e estimativas de custo/linhas.
+
+4) Criação de índice na coluna usada no filtro
+
+• Foi criado um índice na coluna “nome” da tabela “cliente”, pois ela é usada como critério de busca textual.
+• Objetivo: permitir que a consulta deixe de varrer a tabela inteira e passe a localizar as linhas-alvo com base no índice.
+• Observação importante (PostgreSQL): pesquisas de prefixo (como “C%”) geralmente se beneficiam de índice b-tree; já filtros com curinga no início (como “%C”) não costumam usar o mesmo índice.
+
+5) Reexecução da consulta e do EXPLAIN após o índice
+
+• A mesma consulta de filtro por nome foi executada novamente, seguida do EXPLAIN.
+• Comportamento esperado agora: uso do índice recém-criado. O plano tende a mostrar “Index Scan” ou “Bitmap Index Scan + Bitmap Heap Scan”.
+• Diferenças a apontar em relação ao EXPLAIN anterior:
+– Antes: “Seq Scan” (varredura completa), custo estimado maior.
+– Depois: “Index Scan/Bitmap” (acesso seletivo), custo estimado menor, com redução de páginas lidas.
+• Evidências a capturar: print do novo plano de execução destacando o uso do índice.
+
+6) Alteração de coluna de VARCHAR para INT (avaliação de retorno)
+
+• Coluna escolhida para o teste: por exemplo, “telefone” em “cliente”, originalmente textual e opcional.
+• O que foi avaliado:
+– Se todos os valores são estritamente numéricos, a conversão pode ocorrer; porém, zeros à esquerda se perdem quando o tipo vira inteiro.
+– Se existir qualquer caractere não numérico (espaços, hífens, parênteses), o SGBD tende a retornar erro de conversão.
+• Resultado a registrar:
+– Caso de sucesso: conversão concluída; anotar o efeito sobre zeros à esquerda.
+– Caso de erro: registrar a mensagem de erro e mencionar que seria necessário higienizar os dados antes (remover caracteres não numéricos) ou manter o campo como texto por razões de formato.
+
+7) Alteração de coluna de INT para VARCHAR (avaliação de retorno)
+
+• Coluna escolhida para o teste: por exemplo, “estoque” em “produto”, originalmente inteiro e não negativo.
+• O que foi avaliado:
+– A conversão de inteiro para texto costuma ocorrer sem erro, pois qualquer número pode ser representado como string.
+– Impacto: operações aritméticas diretas deixam de ser possíveis sem conversão explícita.
+• Resultado a registrar:
+– Conversão concluída normalmente; apontar que, a partir daí, cálculos exigem casting de volta para número ou manutenção do tipo original se o requisito é numérico.
+
+8) Criação de usuários e concessão de permissões
+
+• Usuário com nome próprio (ex.: “joaofrancisco”): recebeu todas as permissões sobre as tabelas do esquema público.
+• Ponto crítico em PostgreSQL: além de tabelas, sequências também precisam de permissão para permitir INSERT em colunas SERIAL/IDENTITY. É importante conceder “USAGE/SELECT” nas sequências para evitar erros ao inserir.
+• Usuário para colega (ex.: “colega”): recebeu apenas permissão de “SELECT” em uma tabela específica (ex.: “cliente”).
+• Testes realizados:
+– Com o usuário completo: leitura, escrita, alteração de esquema e criação de índices funcionaram.
+– Com o usuário restrito: SELECT funcionou na tabela concedida; tentativas de INSERT/UPDATE/DELETE/ALTER/CREATE INDEX resultaram em erros de permissão (mensagens típicas: “permission denied for relation …” ou “must be owner of relation …”).
+
+9) Repetição dos itens com o usuário do colega (registro de acertos/erros)
+
+• Consulta com LIKE: funcionou, pois SELECT foi concedido.
+• EXPLAIN: geralmente permitido junto com SELECT; funcionou.
+• Criação de índice: falhou por falta de permissão de ALTER/CREATE no objeto.
+• Alterações de tipo de coluna: falharam por falta de permissão de ALTER TABLE (apenas o dono ou um papel com privilégios suficientes pode alterar).
+• Criação de usuário: falhou (requer superusuário ou papel com privilégio de criar papéis).
+• Todos os erros e comportamentos foram anotados para evidência.
+
+10) Conjunto de 12 consultas (4 grupos × 3 JOINs cada) — descrição e expectativa
+
+Obs.: a seguir descrevemos o que cada grupo de consultas faz e o que se espera ver, sem expor código.
+
+• Grupo A (cliente ↔ pedido):
+– Versões com INNER, LEFT e RIGHT JOIN entre clientes e pedidos.
+– Com os dados atuais (1 pedido por cliente), os três tipos retornam essencialmente as mesmas 10 linhas.
+– Diferença conceitual: o LEFT sempre mantém todos os clientes (mesmo sem pedido); o RIGHT mantém todos os pedidos (mesmo sem cliente); o INNER mostra apenas correspondências.
+
+• Grupo B (pedido ↔ itens ↔ produto):
+– Versões com INNER, LEFT e RIGHT envolvendo pedidos, tabela intermediária de itens e produtos.
+– Como cada pedido possui ao menos um item e cada item referencia um produto existente, os três JOINs tendem a retornar 10 linhas no cenário atual.
+– Caso, no futuro, um pedido não tenha itens, o LEFT preservaria o pedido (com colunas nulas no lado dos itens), ao passo que o INNER deixaria de exibi-lo.
+
+• Grupo C (pedido ↔ pagamento):
+– Versões com INNER, LEFT e RIGHT entre pedido e pagamento.
+– No estado atual há um pagamento por pedido; portanto, os resultados ficam iguais entre os três tipos (10 linhas).
+– Se algum pagamento fosse ausente, o LEFT manteria o pedido mesmo sem pagamento, e o RIGHT manteria pagamentos mesmo sem o pedido correspondente (em cenários atípicos).
+
+• Grupo D (cliente ↔ pedido ↔ pagamento):
+– Versões com INNER, LEFT e RIGHT juntando cliente com pedido e pagamento (via pedido).
+– No cenário atual (todos os pedidos têm pagamento), os três JOINs retornam 10 linhas e mostram o cliente, o pedido e seus dados de pagamento lado a lado.
+– Em cenários com lacunas (ex.: cliente sem pedido, ou pedido sem pagamento), as diferenças entre INNER/LEFT/RIGHT ficam evidentes (preservação do lado “principal” no LEFT/RIGHT e exclusão no INNER).
+
+11) Atualização de registros para introduzir valores NULL (efeito planejado)
+
+• Colunas escolhidas para receber NULL: campos não obrigatórios, como telefone e e-mail do cliente, código do produto, cidade/telefone do fornecedor e o campo “confirmado” de pagamento (se a coluna permitir nulo).
+• Justificativa: testar como NULL em colunas não-chave afeta a visualização dos JOINs e a interpretação dos resultados.
+• Impacto esperado:
+– Como as chaves e FKs usadas nos JOINs permanecem íntegras, a quantidade de linhas tende a não mudar.
+– Entretanto, colunas não obrigatórias passarão a aparecer como “NULL” nas consultas, principalmente evidentes nos LEFT/RIGHT JOINs.
+– Em relatórios, isso destaca a importância de tratar valores ausentes (ex.: COALESCE em consultas futuras).
+
+12) Reexecução das consultas com JOIN e avaliação dos resultados
+
+• Após introduzir NULL em colunas não-chave, as consultas com JOIN foram executadas novamente.
+• Observações registradas:
+– Quantidade de linhas: permaneceu a mesma, pois as relações por ID não foram rompidas.
+– Conteúdo de colunas: campos opcionais agora aparecem nulos nas linhas afetadas; isso fica mais perceptível nos resultados de LEFT/RIGHT JOIN quando o lado preservado exibe valores nulos do lado oposto.
+– Conclusão: NULLs em colunas descritivas não alteram as correspondências de JOIN baseadas em chaves, mas impactam a legibilidade e a completude dos relatórios.
+
+13) Conclusões gerais
+
+• Desempenho: a criação de um índice na coluna filtrada pelo LIKE (prefixo) reduziu o custo do plano de execução, trocando varredura sequencial por acesso via índice.
+• Modelagem: as restrições de integridade (PK/FK/UNIQUE/CHECK) funcionam e dão previsibilidade às consultas e relações.
+• Tipos de dados: converter texto para número exige higienização; converter número para texto é simples, mas pode comprometer cálculos futuros se não houver casting de volta.
+• Segurança: permissões finas permitem isolar leitura/escrita; usuários sem privilégios não conseguem alterar esquema ou criar índices.
+• Qualidade dos dados: valores NULL em colunas opcionais não quebram os JOINs por chave, porém exigem tratamento na camada de consulta/apresentação.
+
+14) Itens a anexar (no seu ambiente)
+
+• Print do EXPLAIN antes do índice (mostrando “Seq Scan”).
+• Print do EXPLAIN após o índice (mostrando “Index Scan” ou “Bitmap Index Scan”).
+• Prints de erros de permissão com o usuário restrito (ao tentar criar índice/alterar tabela/criar usuário).
+• Prints de consultas com JOIN antes e depois da introdução de NULL, evidenciando campos nulos.
